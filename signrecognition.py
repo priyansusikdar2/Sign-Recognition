@@ -1,67 +1,70 @@
 import cv2
-import numpy as np
 import mediapipe as mp
-import math
+import pyttsx3
+import time
 
-# Initialize MediaPipe
+# ========== Text-to-Speech ==========
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
+
+def speak(text):
+    engine.say(text)
+    engine.runAndWait()
+
+# ========== MediaPipe Initialization ==========
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
 mp_draw = mp.solutions.drawing_utils
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
+)
 
-# Finger tip IDs
-tip_ids = [4, 8, 12, 16, 20]
-
-# Get angle between three points
-def angle_between(p1, p2, p3):
-    a = np.array([p1.x - p2.x, p1.y - p2.y])
-    b = np.array([p3.x - p2.x, p3.y - p2.y])
-    cosine = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-6)
-    angle = np.arccos(np.clip(cosine, -1.0, 1.0))
-    return np.degrees(angle)
-
-# Get finger states
+# ========== Finger State Extraction ==========
 def get_finger_states(hand_landmarks):
-    fingers = []
+    finger_states = []
+    tip_ids = [4, 8, 12, 16, 20]
 
-    # Thumb
+    # Thumb: x-coordinates
     if hand_landmarks.landmark[tip_ids[0]].x < hand_landmarks.landmark[tip_ids[0] - 1].x:
-        fingers.append(1)
+        finger_states.append(1)
     else:
-        fingers.append(0)
+        finger_states.append(0)
 
-    # Other fingers
+    # Other fingers: y-coordinates
     for i in range(1, 5):
         if hand_landmarks.landmark[tip_ids[i]].y < hand_landmarks.landmark[tip_ids[i] - 2].y:
-            fingers.append(1)
+            finger_states.append(1)
         else:
-            fingers.append(0)
+            finger_states.append(0)
 
-    return fingers
+    return finger_states
 
-# Classify gestures using rules
-def classify_gesture(fingers, landmarks):
-    if fingers == [0, 1, 1, 0, 0]:
-        return "V (Peace)"
-    elif fingers == [0, 1, 0, 0, 0]:
-        return "1"
-    elif fingers == [1, 1, 1, 1, 1]:
-        return "Open Hand"
-    elif fingers == [0, 0, 0, 0, 0]:
-        return "Fist (A)"
-    elif fingers == [1, 0, 0, 0, 1]:
-        return "Y (Shaka)"
-    elif fingers == [0, 1, 1, 1, 1]:
-        angle = angle_between(landmarks.landmark[5], landmarks.landmark[9], landmarks.landmark[13])
-        if 40 < angle < 60:
-            return "B"
-    elif fingers == [1, 1, 0, 0, 0]:
-        return "L"
-    elif fingers == [0, 1, 1, 0, 1]:
-        return "W"
-    return "Unknown"
+# ========== Gesture to Letter Mapping ==========
+gesture_map = {
+    (0, 1, 0, 0, 0): 'D',
+    (0, 1, 1, 0, 0): 'U',
+    (0, 1, 1, 1, 1): 'B',
+    (0, 0, 0, 0, 0): 'A',
+    (1, 1, 1, 1, 1): '5',
+    (0, 1, 0, 0, 1): 'L',
+    (1, 0, 0, 0, 0): 'Thumbs Up',
+}
 
-# Start webcam
+def classify_gesture(states):
+    return gesture_map.get(tuple(states))
+
+# ========== Main Loop ==========
 cap = cv2.VideoCapture(0)
+prev_letter = ""
+prev_time = 0
+phrase = ""
+last_detected_time = 0
+stability_threshold = 1.2  # seconds
+stable_letter = None
+
+log_file = open("sign_output_log.txt", "w")
 
 while True:
     ret, frame = cap.read()
@@ -69,28 +72,49 @@ while True:
         break
 
     frame = cv2.flip(frame, 1)
-    h, w, c = frame.shape
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    result = hands.process(rgb)
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(frame_rgb)
+    h, w, _ = frame.shape
 
-    if result.multi_hand_landmarks:
-        for hand_landmarks in result.multi_hand_landmarks:
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            finger_states = get_finger_states(hand_landmarks)
+            current_letter = classify_gesture(finger_states)
 
-            fingers = get_finger_states(hand_landmarks)
-            gesture = classify_gesture(fingers, hand_landmarks)
+            if current_letter:
+                current_time = time.time()
+                if current_letter == stable_letter:
+                    if current_time - last_detected_time > stability_threshold:
+                        if current_letter != prev_letter:
+                            phrase += current_letter + " "
+                            speak(current_letter)
+                            log_file.write(f"{time.strftime('%H:%M:%S')} - {current_letter}\n")
+                            prev_letter = current_letter
+                        last_detected_time = current_time
+                else:
+                    stable_letter = current_letter
+                    last_detected_time = current_time
 
-            # Draw Gesture
-            cv2.putText(frame, f'Gesture: {gesture}', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+                # Show detected gesture
+                cv2.putText(frame, f"Detected: {current_letter}", (10, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)
 
-            # Draw Finger Status
-            for i, f in enumerate(['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']):
-                cv2.putText(frame, f'{f}: {"Up" if fingers[i] else "Down"}', (10, 70 + i * 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+    # Show phrase buffer
+    cv2.putText(frame, f"Phrase: {phrase.strip()}", (10, h - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    cv2.imshow("Sign Language Recognition", frame)
-    if cv2.waitKey(1) & 0xFF == 27:  # ESC
+    cv2.imshow("Sign Language Detection", frame)
+
+    key = cv2.waitKey(1)
+    if key == 27:  # ESC to quit
         break
+    elif key == ord('c'):
+        phrase = ""
+        speak("Cleared")
+        prev_letter = ""
+        stable_letter = None
 
 cap.release()
 cv2.destroyAllWindows()
+log_file.close()

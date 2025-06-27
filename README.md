@@ -4,11 +4,7 @@ This project is a **real-time sign language recognition system** built with **Py
 
 ---
 
-## 📸 Demo
 
-![Demo](https://github.com/yourusername/sign-language-demo.gif) <!-- Optional: Add your own screen recording -->
-
----
 
 ## 🛠️ Features
 
